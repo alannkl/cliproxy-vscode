@@ -6,6 +6,38 @@ import { serve, TestRequest, weekly } from './server';
 
 const signal = () => new AbortController().signal;
 
+test('Claude quota reads the precise profile tier for each account and detects tier changes', async t => {
+  let tier = 'default_claude_max_5x';
+  const requests: TestRequest[] = [];
+  const url = await serve(t, request => {
+    requests.push(request);
+    return { body: { status_code: 200, body: String(record(request.body)?.url).endsWith('/profile')
+      ? { organization: { rate_limit_tier: tier } } : { five_hour: { utilization: 2 } } } };
+  });
+  const client = new CLIProxyClient(url, 'test-key');
+  const account = { id: 'c', name: 'c', provider: 'claude' as const, authIndex: 'c', disabled: false };
+  assert.equal((await client.quota(account, signal())).planType, 'default_claude_max_5x');
+  tier = 'default_claude_max_20x';
+  assert.equal((await client.quota(account, signal())).planType, 'default_claude_max_20x');
+  assert.equal(requests.length, 4);
+  assert.deepEqual(requests[1]?.body, { auth_index: 'c', method: 'GET', url: 'https://api.anthropic.com/api/oauth/profile',
+    header: { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json', 'anthropic-beta': 'oauth-2025-04-20' } });
+});
+
+test('a failed Claude profile lookup keeps valid quota windows and does not guess a Max tier', async t => {
+  let status = 503;
+  const url = await serve(t, request => ({ body: String(record(request.body)?.url).endsWith('/profile')
+    ? { status_code: status, body: { account: { has_claude_max: true }, organization: { organization_type: 'claude_max' } } }
+    : { status_code: 200, body: { five_hour: { utilization: 2 } } } }));
+  const client = new CLIProxyClient(url, 'test-key');
+  const account = { id: 'c', name: 'c', provider: 'claude' as const, authIndex: 'c', disabled: false };
+  const reading = await client.quota(account, signal());
+  assert.equal(reading.windows[0]?.used, 2);
+  assert.equal(reading.planType, undefined);
+  status = 200;
+  assert.equal((await client.quota(account, signal())).planType, undefined);
+});
+
 test('manual quota refresh retries a locally paused account and clears the cooldown on success', async t => {
   let calls = 0;
   const url = await serve(t, () => ({ body: ++calls === 1
@@ -16,9 +48,9 @@ test('manual quota refresh retries a locally paused account and clears the coold
   await assert.rejects(client.quota(account, signal()), /429/);
   await assert.rejects(client.quota(account, signal()), /429/);
   assert.equal(calls, 1);
-  assert.equal((await client.quota(account, signal(), 'manual'))[0]?.used, 2);
+  assert.equal((await client.quota(account, signal(), 'manual')).windows[0]?.used, 2);
   assert.equal(calls, 2);
-  assert.equal((await client.quota(account, signal()))[0]?.used, 2);
+  assert.equal((await client.quota(account, signal())).windows[0]?.used, 2);
   assert.equal(calls, 3);
 });
 
@@ -48,7 +80,7 @@ test('a quota 429 honors Retry-After and suppresses repeated requests until that
     await assert.rejects(client.quota(account, signal()), /Checks paused/);
     assert.equal(calls, 1);
     t.mock.timers.tick(1);
-    assert.equal((await client.quota(account, signal()))[0]?.used, 12);
+    assert.equal((await client.quota(account, signal())).windows[0]?.used, 12);
     assert.equal(calls, 2);
   }
 });
@@ -73,12 +105,12 @@ test('missing or zero Retry-After uses a five-minute cooldown that increases on 
     t.mock.timers.tick(1);
   }
   limited = false;
-  assert.equal((await client.quota(account, signal()))[0]?.used, 12);
+  assert.equal((await client.quota(account, signal())).windows[0]?.used, 12);
   limited = true;
   await assert.rejects(client.quota(account, signal()), /429/);
   limited = false;
   t.mock.timers.tick(300000);
-  assert.equal((await client.quota(account, signal()))[0]?.used, 12);
+  assert.equal((await client.quota(account, signal())).windows[0]?.used, 12);
 });
 
 test('management requests authenticate and proxy quota GETs with the selected auth index and token placeholder', async t => {
@@ -96,10 +128,11 @@ test('management requests authenticate and proxy quota GETs with the selected au
   const accounts = await client.accounts(signal());
   const codex = accounts.find(a => a.provider === 'codex')!;
   const claude = accounts.find(a => a.provider === 'claude')!;
-  assert.equal((await client.quota(codex, signal()))[0]?.used, 12);
-  assert.equal((await client.quota(claude, signal()))[0]?.used, 45);
+  assert.equal((await client.quota(codex, signal())).windows[0]?.used, 12);
+  assert.equal((await client.quota(claude, signal())).windows[0]?.used, 45);
   assert.deepEqual(requests.map(r => [r.method, r.path, r.headers.authorization]), [
     ['GET', '/v0/management/auth-files', 'Bearer test-management-key'],
+    ['POST', '/v0/management/api-call', 'Bearer test-management-key'],
     ['POST', '/v0/management/api-call', 'Bearer test-management-key'],
     ['POST', '/v0/management/api-call', 'Bearer test-management-key'],
   ]);
@@ -110,7 +143,7 @@ test('management requests authenticate and proxy quota GETs with the selected au
     url: 'https://api.anthropic.com/api/oauth/usage', header: { Authorization: 'Bearer $TOKEN$',
       'Content-Type': 'application/json', 'anthropic-beta': 'oauth-2025-04-20' } });
   await assert.rejects(client.quota({ ...codex, authIndex: undefined }, signal()), /no auth_index/);
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 4);
 });
 
 test('both HTTP failures and errors wrapped in HTTP 200 are rejected without leaking response bodies', async t => {

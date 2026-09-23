@@ -5,11 +5,22 @@
   "version": "0.1.0",
   "publisher": "alannkl",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/alannkl/cliproxy-vscode.git" },
-  "engines": { "vscode": "^1.99.0" },
-  "categories": ["Other"],
-  "extensionKind": ["ui"],
-  "activationEvents": ["onStartupFinished"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alannkl/cliproxy-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "scripts": {
     "compile": "tsc -p .",
@@ -17,29 +28,84 @@
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
     "check": "npm run compile && npm test",
     "vscode:prepublish": "npm run compile",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package"
   },
   "contributes": {
     "commands": [
-      { "command": "cliproxyUsage.configure", "title": "CLIProxy Usage: Configure Connection", "icon": "$(gear)" },
-      { "command": "cliproxyUsage.refresh", "title": "CLIProxy Usage: Refresh", "icon": "$(refresh)" },
-      { "command": "cliproxyUsage.open", "title": "CLIProxy Usage: Show Quotas" }
+      {
+        "command": "cliproxyUsage.configure",
+        "title": "CLIProxy Usage: Configure Connection",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "cliproxyUsage.refresh",
+        "title": "CLIProxy Usage: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cliproxyUsage.open",
+        "title": "CLIProxy Usage: Show Quotas"
+      }
     ],
     "viewsContainers": {
-      "activitybar": [{ "id": "cliproxyUsage", "title": "CLIProxy Quotas", "icon": "media/usage.svg" }]
+      "activitybar": [
+        {
+          "id": "cliproxyUsage",
+          "title": "CLIProxy Quotas",
+          "icon": "media/usage.svg"
+        }
+      ]
     },
     "views": {
-      "cliproxyUsage": [{ "type": "webview", "id": "cliproxyUsage.accounts", "name": "CLIProxy Quotas" }]
+      "cliproxyUsage": [
+        {
+          "type": "webview",
+          "id": "cliproxyUsage.accounts",
+          "name": "CLIProxy Quotas"
+        }
+      ]
     },
     "menus": {
       "view/title": [
-        { "command": "cliproxyUsage.refresh", "when": "view == cliproxyUsage.accounts", "group": "navigation@1" },
-        { "command": "cliproxyUsage.configure", "when": "view == cliproxyUsage.accounts", "group": "navigation@2" }
+        {
+          "command": "cliproxyUsage.refresh",
+          "when": "view == cliproxyUsage.accounts",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cliproxyUsage.configure",
+          "when": "view == cliproxyUsage.accounts",
+          "group": "navigation@2"
+        }
       ]
     },
     "configuration": {
       "title": "CLIProxy Usage",
       "properties": {
+        "cliproxyUsage.planCapacities": {
+          "type": "object",
+          "default": {},
+          "scope": "application",
+          "properties": {
+            "codex": {
+              "type": "object",
+              "additionalProperties": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 }
+            },
+            "claude": {
+              "type": "object",
+              "additionalProperties": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 }
+            }
+          },
+          "additionalProperties": false,
+          "description": "Plan capacity multipliers by provider and reported plan ID, merged with the bundled registry. Example: {\"codex\": {\"prolite\": 5, \"pro\": 20, \"team\": 1}}. Changes immediately recalculate cached totals."
+        },
+        "cliproxyUsage.accountMultipliers": {
+          "type": "object",
+          "default": {},
+          "scope": "application",
+          "additionalProperties": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+          "description": "Optional capacity overrides keyed by auth filename. These take priority over the reported plan and planCapacities; remove an override to follow plan changes automatically."
+        },
         "cliproxyUsage.refreshIntervalMinutes": {
           "type": "integer",
           "default": 5,
@@ -59,8 +125,12 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/vscode": "1.99.0",
     "@vscode/vsce": "^3.6.0",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
   }
 }

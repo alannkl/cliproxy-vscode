@@ -1,0 +1,16 @@
+{
+  "codex": {
+    "plus": 1,
+    "team": 1,
+    "prolite": 5,
+    "pro-lite": 5,
+    "pro_lite": 5,
+    "self_serve_business_prolite": 5,
+    "pro": 20
+  },
+  "claude": {
+    "default_claude_pro": 1,
+    "default_claude_max_5x": 5,
+    "default_claude_max_20x": 20
+  }
+}

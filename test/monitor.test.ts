@@ -2,14 +2,90 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CLIProxyClient } from '../src/client';
 import { QuotaMonitor, refreshIntervalFromMinutes } from '../src/monitor';
-import { record } from '../src/quota';
+import { record, parsePlanCapacities } from '../src/quota';
 import { serve, weekly } from './server';
 
 const files = [
-  { name: 'x1', type: 'codex', auth_index: 'x1' },
-  { name: 'x2', type: 'codex', auth_index: 'x2' },
+  { name: 'x1', type: 'codex', auth_index: 'x1', id_token: { plan_type: 'team' } },
+  { name: 'x2', type: 'codex', auth_index: 'x2', id_token: { plan_type: 'team' } },
   { name: 'c', type: 'claude', auth_index: 'c' },
 ];
+
+test('mixed Claude Max 5x and Max 20x accounts have separate weighted five-hour and Fable totals', async t => {
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { body: { files: [
+      { name: 'a.json', type: 'claude', auth_index: 'a' }, { name: 'b.json', type: 'claude', auth_index: 'b' },
+    ] } };
+    const body = record(request.body);
+    const first = body?.auth_index === 'a';
+    return { body: { status_code: 200, body: String(body?.url).endsWith('/profile')
+      ? { organization: { rate_limit_tier: first ? 'default_claude_max_5x' : 'default_claude_max_20x' } }
+      : { five_hour: { utilization: first ? 20 : 40 }, limits: [
+        { kind: 'weekly_scoped', scope: { model: { display_name: 'Fable' } }, percent: first ? 50 : 80, is_active: true },
+      ] } } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  const claude = monitor.state[0]!;
+  assert.equal(claude.summary?.totalUnits, 125);
+  assert.equal(claude.summary?.remainingUnits, 80);
+  assert.equal(claude.summary?.used, 36);
+  assert.equal(claude.fableSummary?.totalUnits, 125);
+  assert.equal(claude.fableSummary?.remainingUnits, 32.5);
+  assert.equal(claude.fableSummary?.used, 74);
+});
+
+test('an account upgrade or downgrade uses the live quota plan rather than stale auth-file metadata', async t => {
+  let livePlan = 'prolite';
+  let failFirst = false;
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { body: { files: files.slice(0, 2).map(file => ({ ...file, id_token: { plan_type: 'prolite' } })) } };
+    const first = record(request.body)?.auth_index === 'x1';
+    return { body: first && failFirst ? { status_code: 503, body: {} }
+      : { status_code: 200, body: { ...weekly(first ? 20 : 80), plan_type: first ? livePlan : 'prolite' } } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  assert.equal(monitor.state[1]?.summary?.totalUnits, 200);
+  assert.equal(monitor.state[1]?.summary?.remainingUnits, 100);
+  livePlan = 'team';
+  await monitor.refresh('manual');
+  assert.equal(monitor.state[1]?.accounts[0]?.account.planType, 'team');
+  assert.equal(monitor.state[1]?.summary?.totalUnits, 120);
+  assert.equal(monitor.state[1]?.summary?.remainingUnits, 36);
+  livePlan = 'pro';
+  await monitor.refresh('manual');
+  assert.equal(monitor.state[1]?.accounts[0]?.account.planType, 'pro');
+  assert.equal(monitor.state[1]?.summary?.totalUnits, 125);
+  assert.equal(monitor.state[1]?.summary?.remainingUnits, 85);
+  failFirst = true;
+  await monitor.refresh('manual');
+  assert.equal(monitor.state[1]?.accounts[0]?.account.planType, 'pro');
+  assert.equal(monitor.state[1]?.summary?.remainingUnits, 85);
+  assert.ok(monitor.state[1]?.error);
+});
+
+test('editing plan capacities recalculates cached totals without another quota request', async t => {
+  let calls = 0;
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { body: { files: files.slice(0, 2) } };
+    calls++;
+    const first = record(request.body)?.auth_index === 'x1';
+    return { body: { status_code: 200, body: { ...weekly(first ? 20 : 80), plan_type: first ? 'prolite' : 'team' } } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  assert.equal(monitor.state[1]?.summary?.remainingUnits, 84);
+  const checkedAt = monitor.lastCheckedAt;
+  monitor.setCapacityPolicy({ planCapacities: parsePlanCapacities({ codex: { prolite: 10 } }) });
+  assert.equal(calls, 2);
+  assert.equal(monitor.state[1]?.summary?.totalUnits, 110);
+  assert.equal(monitor.state[1]?.summary?.remainingUnits, 82);
+  assert.equal(monitor.lastCheckedAt, checkedAt);
+});
 
 test('a custom refresh interval applies immediately without clearing readings or triggering an extra request', async t => {
   t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 1800000000000 });

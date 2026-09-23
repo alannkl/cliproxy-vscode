@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 import { CLIProxyClient, normalizeBaseUrl } from './client';
 import { QuotaMonitor, refreshIntervalFromMinutes } from './monitor';
-import { providerNames, providers, remainingPercent } from './quota';
+import { providerNames, providers, remainingPercent, parseAccountMultipliers, parsePlanCapacities } from './quota';
 import { isStale, quotaPreview, quotaView, statusText } from './presentation';
+import { SharedQuotaCache } from './shared-cache';
 
 const secretId = (url: string) => `managementKey:${url}`;
 
@@ -16,6 +18,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const readRefreshInterval = () => refreshIntervalFromMinutes(
     vscode.workspace.getConfiguration('cliproxyUsage').get<unknown>('refreshIntervalMinutes'));
   let refreshIntervalMs = readRefreshInterval();
+  const readCapacityPolicy = () => {
+    const config = vscode.workspace.getConfiguration('cliproxyUsage');
+    return { accountMultipliers: parseAccountMultipliers(config.get<unknown>('accountMultipliers')),
+      planCapacities: parsePlanCapacities(config.get<unknown>('planCapacities')) };
+  };
 
   status.name = 'CLIProxy Quotas';
   status.command = 'cliproxyUsage.open';
@@ -49,7 +56,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     status.accessibilityInformation = { label: providers.map(provider => {
       const quota = state.find(p => p.provider === provider);
-      return `${providerNames[provider]}: ${quota?.summary ? remainingPercent(quota.summary.used) + '% remaining' : 'unavailable'}${!quota?.summary || isStale(quota, now, refreshIntervalMs) ? ', stale or unconfigured' : ''}`;
+      const fable = provider === 'claude' ? `; Fable weekly: ${quota?.fableSummary ? remainingPercent(quota.fableSummary.used) + '% remaining' : 'unavailable'}` : '';
+      return `${providerNames[provider]}: ${quota?.summary ? remainingPercent(quota.summary.used) + '% remaining, ' + Math.round(quota.summary.remainingUnits) + ' of ' + Math.round(quota.summary.totalUnits) + ' units' : 'unavailable'}${fable}${!quota?.summary || isStale(quota, now, refreshIntervalMs) ? ', stale or unconfigured' : ''}`;
     }).join('; ') };
   };
 
@@ -70,11 +78,15 @@ export function activate(context: vscode.ExtensionContext): void {
         render();
         return;
       }
-      monitor = new QuotaMonitor(new CLIProxyClient(url, key), render, refreshIntervalMs);
+      const client = new CLIProxyClient(url, key);
+      monitor = new QuotaMonitor(client, render, refreshIntervalMs, {
+        sharedCache: new SharedQuotaCache(join(context.globalStorageUri.fsPath, 'quota-cache'), client.cacheKey),
+        capacityPolicy: readCapacityPolicy(),
+      });
       monitor.start();
     } catch {
       if (current !== revision) return;
-      connectionMessage = 'Unable to load connection settings. Run Configure Connection.';
+      connectionMessage = 'Unable to load connection or capacity settings. Check CLIProxy Usage settings.';
       render();
     }
   };
@@ -122,6 +134,15 @@ export function activate(context: vscode.ExtensionContext): void {
       await monitor.refresh('manual');
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('cliproxyUsage.accountMultipliers') || event.affectsConfiguration('cliproxyUsage.planCapacities')) {
+        try {
+          const policy = readCapacityPolicy();
+          if (monitor) monitor.setCapacityPolicy(policy);
+          else void reload();
+        } catch {
+          void vscode.window.showErrorMessage('Check CLIProxy planCapacities and accountMultipliers. Capacities must be numbers greater than 0 and at most 1000.');
+        }
+      }
       if (event.affectsConfiguration('cliproxyUsage.refreshIntervalMinutes')) {
         refreshIntervalMs = readRefreshInterval();
         monitor?.setRefreshInterval(refreshIntervalMs);

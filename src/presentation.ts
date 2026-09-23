@@ -1,5 +1,5 @@
 import { ProviderQuota, DEFAULT_REFRESH_MS } from './monitor';
-import { Account, providerNames, providers, quotaColor, remainingPercent, windowLabel } from './quota';
+import { Account, AccountQuota, providerNames, providers, quotaColor, remainingColor, remainingPercent, windowLabel } from './quota';
 
 const circles = { green: '🟢', orange: '🟠', red: '🔴', gray: '⚪' } as const;
 
@@ -8,9 +8,16 @@ export function isStale(quota: ProviderQuota, now = Date.now(), refreshIntervalM
 }
 
 function providerStatus(quota: ProviderQuota, now: number, refreshIntervalMs: number): string {
-  const color = quotaColor(quota.summary?.used, isStale(quota, now, refreshIntervalMs));
+  if (quota.provider === 'claude') {
+    const fiveHour = quota.summary?.seconds === 18000 ? quota.summary : undefined;
+    const fable = quota.fableSummary;
+    const units = fiveHour && fable ? Math.min(fiveHour.remainingUnits, fable.remainingUnits) : undefined;
+    const color = remainingColor(units, isStale(quota, now, refreshIntervalMs));
+    return `${circles[color]} C: ${fiveHour ? remainingPercent(fiveHour.used) + '%' : '-'}/${fable ? remainingPercent(fable.used) + '%' : '-'}`;
+  }
+  const color = remainingColor(quota.summary?.remainingUnits, isStale(quota, now, refreshIntervalMs));
   const value = quota.summary ? `${remainingPercent(quota.summary.used)}%` : '-';
-  return `${circles[color]} ${quota.provider === 'claude' ? 'C' : 'X'}: ${value}`;
+  return `${circles[color]} X: ${value}`;
 }
 
 export function statusText(state: ProviderQuota[], now = Date.now(), refreshIntervalMs = DEFAULT_REFRESH_MS): string {
@@ -20,6 +27,10 @@ export function statusText(state: ProviderQuota[], now = Date.now(), refreshInte
 
 function accountName(account: Account): string {
   return account.name.replace(/\.json$/i, '').replace(/^(claude|codex)-[a-f0-9]{8,}-/i, '');
+}
+
+function planName(account: Account): string | undefined {
+  return account.planType?.replace(/^default_claude_/, '').replaceAll('_', ' ');
 }
 
 function windowName(label: string): string {
@@ -48,26 +59,34 @@ function checkedTime(checkedAt: number | undefined): string {
   return checkedAt === undefined ? 'Waiting for first refresh' : `Last checked ${new Date(checkedAt).toLocaleTimeString()}`;
 }
 
+function accountWarning(entry: AccountQuota, quota: ProviderQuota, now: number, refreshIntervalMs: number): string | undefined {
+  if (entry.error) return entry.error;
+  if (entry.updatedAt !== undefined && now - entry.updatedAt > refreshIntervalMs * 2) return 'Waiting for a fresh reading.';
+  // Provider-wide failures without account errors, such as mismatched windows, still need an explanation.
+  if (quota.error && !quota.accounts.some(account => account.error)) return quota.error;
+  return undefined;
+}
+
 function providerPreview(quota: ProviderQuota, now: number, refreshIntervalMs: number): string {
   const lines = [`### ${providerNames[quota.provider]} quota remaining`, ''];
-  if (quota.summary) lines.push(`**${remainingPercent(quota.summary.used)}%** average · ${windowLabel(quota.summary.seconds)}`, '');
-  const stale = isStale(quota, now, refreshIntervalMs);
-  if (stale) lines.push(`Stale / unavailable: ${markdown(quota.error ?? 'Waiting for a fresh reading.')}`, '');
-  if (!quota.accounts.length && !quota.error) lines.push('No accounts found.', '');
+  if (quota.summary) lines.push(`**${remainingPercent(quota.summary.used)}%** remaining · **${Math.round(quota.summary.remainingUnits)} / ${Math.round(quota.summary.totalUnits)} units** · ${windowLabel(quota.summary.seconds)}`, '');
+  if (quota.fableSummary) lines.push(`Fable weekly: **${remainingPercent(quota.fableSummary.used)}%** · **${Math.round(quota.fableSummary.remainingUnits)} / ${Math.round(quota.fableSummary.totalUnits)} units**`, '');
+  if (!quota.accounts.length) lines.push(markdown(quota.error ?? 'No accounts found.'), '');
   for (const entry of quota.accounts) {
-    lines.push(`**${markdown(accountName(entry.account))}**${entry.account.disabled ? ' · disabled' : ''}`, '');
-    if (entry.error) lines.push(`Stale / unavailable: ${markdown(entry.error)}`, '');
-    lines.push('| Window | Remaining | Reset in |', '| :--- | :--- | :--- |');
+    const warning = accountWarning(entry, quota, now, refreshIntervalMs);
+    lines.push(`**${markdown(accountName(entry.account))}**${entry.account.planType ? ' · ' + markdown(planName(entry.account)!) : ''}${entry.account.disabled ? ' · disabled' : ''}`, '');
+    if (warning) lines.push(`Stale / unavailable: ${markdown(warning)}`, '');
+    lines.push('<table><tbody>');
     for (const window of entry.windows) {
       const remaining = remainingPercent(window.used);
       const filled = Math.round(remaining / 10);
       const bar = '▰'.repeat(filled) + '▱'.repeat(10 - filled);
-      const color = quotaColor(window.used, Boolean(entry.error) || stale);
+      const color = quotaColor(window.used, Boolean(warning));
       const themeColor = color === 'gray' ? '--vscode-disabledForeground' : `--vscode-charts-${color}`;
-      lines.push(`| ${markdown(windowName(window.label))} | <span style="color:var(${themeColor});">${bar}</span> **${remaining}%** | ${resetIn(window.resetAt, now)} |`);
+      lines.push(`<tr><td>${html(windowName(window.label))}</td><td><span style="color:var(${themeColor});">${bar}</span> <strong>${remaining}%</strong></td><td>${resetIn(window.resetAt, now)}</td></tr>`);
     }
-    if (!entry.windows.length) lines.push('| - | Unavailable | - |');
-    lines.push('');
+    if (!entry.windows.length) lines.push('<tr><td>Quota unavailable</td></tr>');
+    lines.push('</tbody></table>', '');
   }
   return lines.join('\n');
 }
@@ -90,13 +109,12 @@ interface ViewOptions {
 export function quotaView(state: ProviderQuota[], options: ViewOptions): string {
   const now = options.now ?? Date.now();
   const sections = state.map(quota => {
-    const stale = isStale(quota, now, options.refreshIntervalMs);
-    const summary = quota.summary ? `${remainingPercent(quota.summary.used)}% remaining · ${windowLabel(quota.summary.seconds)}` : '-';
-    const warning = stale ? `<p class="warning">Stale / unavailable: ${html(quota.error ?? 'Waiting for a fresh reading.')}</p>` : '';
+    const summary = quota.summary ? `${remainingPercent(quota.summary.used)}% · ${Math.round(quota.summary.remainingUnits)}/${Math.round(quota.summary.totalUnits)} units · ${windowLabel(quota.summary.seconds)}` : '-';
     const accounts = quota.accounts.map(entry => {
+      const warning = accountWarning(entry, quota, now, options.refreshIntervalMs ?? DEFAULT_REFRESH_MS);
       const windows = entry.windows.map(window => {
         const remaining = remainingPercent(window.used);
-        const color = quotaColor(window.used, Boolean(entry.error) || stale);
+        const color = quotaColor(window.used, Boolean(warning));
         const reset = window.resetAt ? new Date(window.resetAt).toLocaleString() : 'Reset time not reported';
         return `<div class="window">
           <span class="window-name">${html(windowName(window.label))}</span>
@@ -106,13 +124,13 @@ export function quotaView(state: ProviderQuota[], options: ViewOptions): string 
         </div>`;
       }).join('');
       return `<article class="account">
-        <h3 title="${html(entry.account.name)}">${html(accountName(entry.account))}${entry.account.disabled ? '<span class="badge">disabled</span>' : ''}</h3>
-        ${entry.error ? `<p class="warning">Stale / unavailable: ${html(entry.error)}</p>` : ''}
+        <h3 title="${html(entry.account.name)}">${html(accountName(entry.account))}${entry.account.planType ? `<span class="badge" title="${html(entry.account.planType)}">${html(planName(entry.account)!)}</span>` : ''}${entry.account.disabled ? '<span class="badge">disabled</span>' : ''}</h3>
+        ${warning ? `<p class="warning">Stale / unavailable: ${html(warning)}</p>` : ''}
         ${windows || '<p class="muted">Quota unavailable</p>'}
       </article>`;
     }).join('');
     return `<section class="provider"><header><h2>${providerNames[quota.provider]}</h2><span class="summary">${summary}</span></header>
-      ${warning}${accounts || '<p class="muted">No accounts found.</p>'}</section>`;
+      ${accounts || `<p class="${quota.error ? 'warning' : 'muted'}">${html(quota.error ?? 'No accounts found.')}</p>`}</section>`;
   }).join('');
   const content = state.length ? sections : `<div class="setup"><p>${html(options.message)}</p>
     <a class="button" href="command:cliproxyUsage.configure">Configure Connection</a></div>`;

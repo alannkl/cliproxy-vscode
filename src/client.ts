@@ -1,6 +1,8 @@
-import { Account, parseAccounts, parseQuota, QuotaWindow, record } from './quota';
+import { Account, parseAccounts, parseQuotaReading, claudeProfilePlan, QuotaReading, record } from './quota';
+import { createHash } from 'node:crypto';
 
 export type RefreshMode = 'automatic' | 'manual';
+export interface Cooldown { retryAt: number; attempts: number; serverDirected: boolean }
 
 function retryAfter(header: unknown, now: number): number | undefined {
   const headers = record(header);
@@ -28,7 +30,18 @@ export function normalizeBaseUrl(input: string): string {
 
 export class CLIProxyClient {
   readonly baseUrl: string;
-  private readonly cooldowns = new Map<string, { retryAt: number; attempts: number; serverDirected: boolean }>();
+  private readonly cooldowns = new Map<string, Cooldown>();
+
+  get cacheKey(): string {
+    return createHash('sha256').update(this.baseUrl).update('\0').update(this.managementKey).digest('hex');
+  }
+
+  exportCooldowns(): Record<string, Cooldown> { return Object.fromEntries(this.cooldowns); }
+
+  importCooldowns(cooldowns: Record<string, Cooldown>): void {
+    this.cooldowns.clear();
+    for (const [id, cooldown] of Object.entries(cooldowns)) this.cooldowns.set(id, cooldown);
+  }
 
   constructor(baseUrl: string, private readonly managementKey: string, private readonly timeoutMs = 15000) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
@@ -70,7 +83,7 @@ export class CLIProxyClient {
     return parseAccounts(await this.request('auth-files', signal));
   }
 
-  async quota(account: Account, signal: AbortSignal, mode: RefreshMode = 'automatic'): Promise<QuotaWindow[]> {
+  async quota(account: Account, signal: AbortSignal, mode: RefreshMode = 'automatic'): Promise<QuotaReading> {
     if (!account.authIndex) throw new Error('Auth file has no auth_index. Check the CLIProxy version and credential.');
     const cooldown = this.cooldowns.get(account.id);
     if (cooldown && Date.now() < cooldown.retryAt && (mode === 'automatic' || cooldown.serverDirected)) {
@@ -103,9 +116,20 @@ export class CLIProxyClient {
       throw rateLimitError(retryAt);
     }
     if (status < 200 || status >= 300) throw new Error(`Provider quota API returned HTTP ${status}.`);
-    const windows = parseQuota(account.provider, envelope?.body);
+    const reading = parseQuotaReading(account.provider, envelope?.body);
     this.cooldowns.delete(account.id);
-    return windows;
+    if (account.provider === 'claude') {
+      try {
+        const profile = record(await this.request('api-call', signal, {
+          auth_index: account.authIndex, method: 'GET', header,
+          url: 'https://api.anthropic.com/api/oauth/profile',
+        }));
+        if (profile?.status_code === 200) reading.planType = claudeProfilePlan(profile.body) ?? reading.planType;
+      } catch {
+        // Quota remains useful if optional plan metadata is unavailable. Mixed unknown plans require overrides.
+      }
+    }
+    return reading;
   }
 }
 
