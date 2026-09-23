@@ -1,0 +1,66 @@
+{
+  "name": "cliproxy-usage",
+  "displayName": "CLIProxy Usage",
+  "description": "Claude and Codex quota remaining in your status bar, via your CLIProxyAPI server.",
+  "version": "0.1.0",
+  "publisher": "alannkl",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/alannkl/cliproxy-vscode.git" },
+  "engines": { "vscode": "^1.99.0" },
+  "categories": ["Other"],
+  "extensionKind": ["ui"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
+    "check": "npm run compile && npm test",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --no-dependencies"
+  },
+  "contributes": {
+    "commands": [
+      { "command": "cliproxyUsage.configure", "title": "CLIProxy Usage: Configure Connection", "icon": "$(gear)" },
+      { "command": "cliproxyUsage.refresh", "title": "CLIProxy Usage: Refresh", "icon": "$(refresh)" },
+      { "command": "cliproxyUsage.open", "title": "CLIProxy Usage: Show Quotas" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "cliproxyUsage", "title": "CLIProxy Quotas", "icon": "media/usage.svg" }]
+    },
+    "views": {
+      "cliproxyUsage": [{ "type": "webview", "id": "cliproxyUsage.accounts", "name": "CLIProxy Quotas" }]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "cliproxyUsage.refresh", "when": "view == cliproxyUsage.accounts", "group": "navigation@1" },
+        { "command": "cliproxyUsage.configure", "when": "view == cliproxyUsage.accounts", "group": "navigation@2" }
+      ]
+    },
+    "configuration": {
+      "title": "CLIProxy Usage",
+      "properties": {
+        "cliproxyUsage.refreshIntervalMinutes": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 1440,
+          "scope": "application",
+          "description": "Minutes between automatic quota refreshes. Changes apply immediately. Manual refresh remains available."
+        },
+        "cliproxyUsage.baseUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "CLIProxyAPI server URL, for example http://your-vm:8317. Run Configure Connection to store its management key securely."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.99.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.0"
+  }
+}
