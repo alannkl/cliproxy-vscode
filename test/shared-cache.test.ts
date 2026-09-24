@@ -14,6 +14,67 @@ import { serve, weekly } from './server';
 
 const files = [{ name: 'a.json', type: 'codex', auth_index: 'a', id_token: { plan_type: 'prolite' } }];
 
+test('concurrent scoped refreshes across windows preserve both updates without satisfying unrelated targets', async t => {
+  const path = await directory(t);
+  const calls: string[] = [];
+  let used = 20;
+  const url = await serve(t, async request => {
+    if (request.path.endsWith('auth-files')) return { body: { files: [
+      ...files, { ...files[0], name: 'b.json', auth_index: 'b' },
+    ] } };
+    calls.push(String(record(request.body)?.auth_index));
+    await delay(100);
+    return { body: { status_code: 200, body: weekly(used) } };
+  });
+  const first = windowMonitor(t, url, path), second = windowMonitor(t, url, path);
+  await first.refresh();
+  await second.refresh();
+  const a = { provider: 'codex' as const, accountId: first.state[1]!.accounts[0]!.account.id };
+  const b = { provider: 'codex' as const, accountId: first.state[1]!.accounts[1]!.account.id };
+  used = 60;
+  calls.length = 0;
+  await Promise.all([first.refresh('manual', a), second.refresh('manual', b)]);
+  assert.deepEqual(calls.sort(), ['a', 'b']);
+  await first.refresh();
+  await second.refresh();
+  assert.equal(first.state[1]?.summary?.used, 60);
+  assert.deepEqual(second.state, first.state);
+  calls.length = 0;
+  await Promise.all([first.refresh('manual', a), second.refresh('manual', a)]);
+  assert.deepEqual(calls, ['a']);
+  calls.length = 0;
+  const scoped = first.refresh('manual', a);
+  await eventually(() => calls.length === 1);
+  const all = second.refresh('manual');
+  await Promise.all([scoped, all]);
+  assert.deepEqual(calls.sort(), ['a', 'a', 'b']);
+});
+
+test('a scoped refresh does not postpone a due automatic refresh of all accounts', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
+  const path = await directory(t);
+  const calls: string[] = [];
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { body: { files: [
+      ...files, { ...files[0], name: 'b.json', auth_index: 'b' },
+    ] } };
+    calls.push(String(record(request.body)?.auth_index));
+    return { body: { status_code: 200, body: weekly(20) } };
+  });
+  const first = windowMonitor(t, url, path);
+  await first.refresh();
+  const fullAttempt = first.lastAttempt;
+  calls.length = 0;
+  t.mock.timers.tick(300001);
+  await first.refresh('manual', { provider: 'codex', accountId: first.state[1]!.accounts[0]!.account.id });
+  assert.deepEqual(calls, ['a']);
+  assert.equal(first.lastAttempt, fullAttempt);
+  const second = windowMonitor(t, url, path);
+  await second.refresh();
+  assert.deepEqual(calls.sort(), ['a', 'a', 'b']);
+  assert.equal(second.lastAttempt, 1800000300001);
+});
+
 test('two windows share both usage and profile requests for multiple Claude accounts', async t => {
   const path = await directory(t);
   let usageCalls = 0;

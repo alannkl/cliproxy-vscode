@@ -1,7 +1,15 @@
-import { Account, parseAccounts, parseQuotaReading, claudeProfilePlan, QuotaReading, record } from './quota';
+import { Account, Provider, parseAccounts, parseQuotaReading, claudeProfilePlan, QuotaReading, record } from './quota';
 import { createHash } from 'node:crypto';
 
 export type RefreshMode = 'automatic' | 'manual';
+// An omitted target refreshes all accounts; an omitted accountId selects the provider.
+export interface RefreshTarget { provider: Provider; accountId?: string }
+
+export function refreshCovers(target: RefreshTarget | undefined, requested: RefreshTarget | undefined): boolean {
+  return !target || Boolean(requested && target.provider === requested.provider
+    && (target.accountId === undefined || target.accountId === requested.accountId));
+}
+
 export interface Cooldown { retryAt: number; attempts: number; serverDirected: boolean }
 
 function retryAfter(header: unknown, now: number): number | undefined {

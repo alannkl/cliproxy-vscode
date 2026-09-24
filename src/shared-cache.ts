@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import lockfile from 'proper-lockfile';
 import type { Cooldown, RefreshMode } from './client';
+import { RefreshTarget, refreshCovers } from './client';
 import type { ProviderQuota } from './monitor';
 import { record, providers } from './quota';
 
@@ -11,6 +12,9 @@ export interface QuotaSnapshot {
   version: 1;
   revision: string;
   mode: RefreshMode;
+  target?: RefreshTarget;
+  // Partial snapshots retain the previous full check so other accounts still refresh on schedule.
+  lastFullCheckedAt?: number;
   lastAttempt: number;
   lastCheckedAt: number;
   state: ProviderQuota[];
@@ -44,7 +48,12 @@ function validSnapshot(value: unknown): value is QuotaSnapshot {
   if (!snapshot || snapshot.version !== 1 || typeof snapshot.revision !== 'string'
     || !['automatic', 'manual'].includes(String(snapshot.mode))
     || !finite(snapshot.lastAttempt) || !finite(snapshot.lastCheckedAt)
+    || (snapshot.lastFullCheckedAt !== undefined && !finite(snapshot.lastFullCheckedAt))
     || !Array.isArray(snapshot.state) || snapshot.state.length !== providers.length) return false;
+  if (snapshot.target !== undefined) {
+    const target = record(snapshot.target);
+    if (!target || !providers.some(provider => provider === target.provider) || !optionalText(target.accountId)) return false;
+  }
   if (!snapshot.state.every((raw, index) => {
     const state = record(raw);
     if (!state || state.provider !== providers[index] || !optionalText(state.error)
@@ -95,13 +104,15 @@ export class SharedQuotaCache {
   }
 
   async refresh(mode: RefreshMode, intervalMs: number, signal: AbortSignal,
-    fetchSnapshot: (previous: QuotaSnapshot | undefined, signal: AbortSignal) => Promise<QuotaSnapshot>): Promise<QuotaSnapshot> {
+    fetchSnapshot: (previous: QuotaSnapshot | undefined, signal: AbortSignal) => Promise<QuotaSnapshot>,
+    target?: RefreshTarget): Promise<QuotaSnapshot> {
     const requestedAt = Date.now();
     const cached = await this.read();
     const reusable = (snapshot: QuotaSnapshot | undefined) => snapshot && snapshot.lastCheckedAt <= Date.now()
-      && (mode === 'automatic' ? Date.now() - snapshot.lastCheckedAt < intervalMs
+      && (mode === 'automatic' ? Date.now() - (snapshot.target ? snapshot.lastFullCheckedAt ?? 0 : snapshot.lastCheckedAt) < intervalMs
         : snapshot.lastCheckedAt >= requestedAt
           && (snapshot.revision !== cached?.revision || snapshot.lastCheckedAt > requestedAt)
+          && refreshCovers(snapshot.target, target)
           && (snapshot.mode === 'manual' || snapshot.state.every(provider => !provider.error)));
     if (reusable(cached)) return cached!;
     await fs.mkdir(dirname(this.path), { recursive: true, mode: 0o700 });

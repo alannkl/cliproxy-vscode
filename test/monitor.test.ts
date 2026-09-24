@@ -11,6 +11,124 @@ const files = [
   { name: 'c', type: 'claude', auth_index: 'c' },
 ];
 
+test('provider refresh requests only that provider and preserves other provider readings and freshness', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
+  const calls: string[] = [];
+  let used = 20;
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { body: { files } };
+    const id = String(record(request.body)?.auth_index);
+    calls.push(id);
+    return { body: { status_code: 200, body: id === 'c' ? { five_hour: { utilization: used } } : weekly(used) } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  const claude = structuredClone(monitor.state[0]);
+  const lastAttempt = monitor.lastAttempt;
+  calls.length = 0;
+  used = 60;
+  t.mock.timers.tick(1000);
+  await monitor.refresh('manual', { provider: 'codex' });
+  assert.deepEqual(calls.sort(), ['x1', 'x2']);
+  assert.deepEqual(monitor.state[0], claude);
+  assert.equal(monitor.state[1]?.summary?.used, 60);
+  assert.equal(monitor.lastAttempt, lastAttempt);
+  assert.equal(monitor.lastCheckedAt, 1800000001000);
+});
+
+test('account refresh updates only the selected account and recalculates its provider total', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
+  const calls: string[] = [];
+  let used = 20;
+  let failing = false;
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { body: { files: files.slice(0, 2) } };
+    calls.push(String(record(request.body)?.auth_index));
+    return { body: { status_code: failing ? 503 : 200, body: weekly(used) } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  const other = structuredClone(monitor.state[1]!.accounts[1]);
+  const target = { provider: 'codex' as const, accountId: monitor.state[1]!.accounts[0]!.account.id };
+  calls.length = 0;
+  used = 60;
+  t.mock.timers.tick(1000);
+  await monitor.refresh('manual', target);
+  assert.deepEqual(calls, ['x1']);
+  assert.equal(monitor.state[1]?.summary?.used, 40);
+  assert.equal(monitor.state[1]?.summary?.updatedAt, 1800000000000);
+  assert.equal(monitor.state[1]?.accounts[0]?.updatedAt, 1800000001000);
+  assert.deepEqual(monitor.state[1]?.accounts[1], other);
+  failing = true;
+  await monitor.refresh('manual', target);
+  assert.equal(monitor.state[1]?.summary?.used, 40);
+  assert.match(monitor.state[1]!.accounts[0]!.error!, /503/);
+  assert.deepEqual(monitor.state[1]?.accounts[1], other);
+});
+
+test('scoped discovery failure leaves unrelated accounts untouched and removed accounts disappear only in scope', async t => {
+  let fail = false;
+  let currentFiles = files;
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { status: fail ? 503 : 200, body: { files: currentFiles } };
+    return { body: { status_code: 200, body: record(request.body)?.auth_index === 'c'
+      ? { five_hour: { utilization: 20 } } : weekly(20) } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  const claude = structuredClone(monitor.state[0]);
+  const other = structuredClone(monitor.state[1]!.accounts[1]);
+  const target = { provider: 'codex' as const, accountId: monitor.state[1]!.accounts[0]!.account.id };
+  fail = true;
+  await monitor.refresh('manual', target);
+  assert.match(monitor.state[1]!.accounts[0]!.error!, /503/);
+  assert.deepEqual(monitor.state[1]?.accounts[1], other);
+  assert.deepEqual(monitor.state[0], claude);
+  fail = false;
+  currentFiles = [];
+  await monitor.refresh('manual', target);
+  assert.deepEqual(monitor.state[1]?.accounts, [other]);
+  assert.equal(monitor.state[1]?.summary?.used, 20);
+  assert.equal(monitor.state[1]?.error, undefined);
+  assert.deepEqual(monitor.state[0], claude);
+  await monitor.refresh('manual');
+  assert.ok(monitor.state.every(p => p.accounts.length === 0 && !p.summary));
+});
+
+test('different refresh targets and Refresh All queued during a refresh are all fulfilled', async t => {
+  let hold = false;
+  let release: (() => void) | undefined;
+  const calls: string[] = [];
+  const url = await serve(t, async request => {
+    if (request.path.endsWith('auth-files')) {
+      if (hold) await new Promise<void>(resolve => { release = resolve; });
+      return { body: { files: files.slice(0, 2) } };
+    }
+    calls.push(String(record(request.body)?.auth_index));
+    return { body: { status_code: 200, body: weekly(20) } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  calls.length = 0;
+  hold = true;
+  const firstTarget = { provider: 'codex' as const, accountId: monitor.state[1]!.accounts[0]!.account.id };
+  const first = monitor.refresh('manual', firstTarget);
+  const repeated = monitor.refresh('manual', firstTarget);
+  assert.equal(first, repeated);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const second = monitor.refresh('manual', { provider: 'codex', accountId: monitor.state[1]!.accounts[1]!.account.id });
+  const all = monitor.refresh('manual');
+  hold = false;
+  release();
+  await Promise.all([first, repeated, second, all]);
+  assert.deepEqual(calls.sort(), ['x1', 'x1', 'x2', 'x2']);
+  assert.equal(monitor.refreshing, false);
+});
+
 test('mixed Claude Max 5x and Max 20x accounts have separate weighted five-hour and Fable totals', async t => {
   const url = await serve(t, request => {
     if (request.path.endsWith('auth-files')) return { body: { files: [

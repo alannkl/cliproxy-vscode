@@ -1,4 +1,4 @@
-import { CLIProxyClient, RefreshMode } from './client';
+import { CLIProxyClient, RefreshMode, RefreshTarget, refreshCovers } from './client';
 import { CapacityPolicy, AccountQuota, summarizeQuota, summarizeFableQuota, Provider, providers, Summary } from './quota';
 import { randomUUID } from 'node:crypto';
 import { SharedQuotaCache, QuotaSnapshot } from './shared-cache';
@@ -26,7 +26,9 @@ export class QuotaMonitor {
   lastCheckedAt?: number;
   private pending?: Promise<void>;
   private pendingMode?: RefreshMode;
-  private queuedManual?: Promise<void>;
+  private pendingTarget?: RefreshTarget;
+  private readonly queued = new Map<string, Promise<void>>();
+  private lastFullCheckedAt?: number;
   private timer?: ReturnType<typeof setInterval>;
   private readonly controller = new AbortController();
   private unsubscribe?: () => void;
@@ -72,24 +74,29 @@ export class QuotaMonitor {
     void this.refresh();
   }
 
-  refresh(mode: RefreshMode = 'automatic'): Promise<void> {
+  refresh(mode: RefreshMode = 'automatic', target?: RefreshTarget): Promise<void> {
     if (this.controller.signal.aborted) return Promise.resolve();
     if (this.pending) {
-      if (mode === 'manual' && this.pendingMode === 'automatic') {
-        this.queuedManual ??= this.pending.then(() => {
-          this.queuedManual = undefined;
-          return this.refresh('manual');
-        });
-        return this.queuedManual;
+      if ((mode === 'manual' && this.pendingMode === 'automatic') || !refreshCovers(this.pendingTarget, target)) {
+        const key = JSON.stringify([mode, target?.provider, target?.accountId]);
+        if (!this.queued.has(key)) {
+          this.queued.set(key, this.pending.then(() => {
+            this.queued.delete(key);
+            return this.refresh(mode, target);
+          }));
+        }
+        return this.queued.get(key)!;
       }
       return this.pending;
     }
     this.refreshing = true;
-    this.lastAttempt = Date.now();
+    if (!target) this.lastAttempt = Date.now();
     this.pendingMode = mode;
-    this.pending = this.run(mode).finally(() => {
+    this.pendingTarget = target;
+    this.pending = this.run(mode, target).finally(() => {
       this.pending = undefined;
       this.pendingMode = undefined;
+      this.pendingTarget = undefined;
       this.refreshing = false;
       if (!this.controller.signal.aborted) {
         this.onChange();
@@ -99,27 +106,29 @@ export class QuotaMonitor {
     return this.pending;
   }
 
-  private async run(mode: RefreshMode): Promise<void> {
+  private async run(mode: RefreshMode, target?: RefreshTarget): Promise<void> {
     try {
       if (this.options.sharedCache) {
         const snapshot = await this.options.sharedCache.refresh(mode, this.intervalMs, this.controller.signal, async (previous, signal) => {
           if (previous) this.adopt(previous);
-          this.lastAttempt = Date.now();
-          await this.fetch(mode, signal);
+          if (!target) this.lastAttempt = Date.now();
+          await this.fetch(mode, signal, target);
           this.lastCheckedAt = Date.now();
-          return { version: 1, revision: randomUUID(), mode, lastAttempt: this.lastAttempt,
+          if (!target) this.lastFullCheckedAt = this.lastCheckedAt;
+          return { version: 1, revision: randomUUID(), mode, target,
+            lastFullCheckedAt: target ? this.lastFullCheckedAt : undefined, lastAttempt: this.lastAttempt ?? 0,
             lastCheckedAt: this.lastCheckedAt, state: this.state, cooldowns: this.client.exportCooldowns() };
-        });
+        }, target);
         if (!this.controller.signal.aborted) this.adopt(snapshot);
       } else {
-        await this.fetch(mode, this.controller.signal);
+        await this.fetch(mode, this.controller.signal, target);
         this.lastCheckedAt = Date.now();
+        if (!target) this.lastFullCheckedAt = this.lastCheckedAt;
       }
     } catch {
       if (!this.controller.signal.aborted) {
         const message = 'Shared quota refresh unavailable. Another window may still be refreshing; retry shortly.';
-        this.state = this.state.map(p => ({ ...p, error: message,
-          accounts: p.accounts.map(a => ({ ...a, error: message })) }));
+        this.markError(message, target);
       }
     }
   }
@@ -128,6 +137,7 @@ export class QuotaMonitor {
     this.revision = snapshot.revision;
     this.lastAttempt = snapshot.lastAttempt;
     this.lastCheckedAt = snapshot.lastCheckedAt;
+    this.lastFullCheckedAt = snapshot.target ? snapshot.lastFullCheckedAt : snapshot.lastCheckedAt;
     this.client.importCooldowns(snapshot.cooldowns);
     this.state = this.summarize(snapshot.state.flatMap(p => p.accounts), snapshot.state, snapshot.lastCheckedAt);
     // Preserve discovery errors when there are no account rows to carry the error.
@@ -141,8 +151,9 @@ export class QuotaMonitor {
       const accounts = results.filter(a => a.account.provider === provider)
         .sort((a, b) => a.account.name.localeCompare(b.account.name));
       try {
-        return { provider, accounts, summary: summarizeQuota(accounts, checkedAt, this.capacityPolicy),
-          fableSummary: provider === 'claude' ? summarizeFableQuota(accounts, checkedAt, this.capacityPolicy) : undefined,
+        const updatedAt = accounts.reduce((oldest, account) => Math.min(oldest, account.updatedAt ?? checkedAt), checkedAt);
+        return { provider, accounts, summary: summarizeQuota(accounts, updatedAt, this.capacityPolicy),
+          fableSummary: provider === 'claude' ? summarizeFableQuota(accounts, updatedAt, this.capacityPolicy) : undefined,
           lastCompleteAccounts: accounts };
       } catch (error) {
         const old = previous.find(p => p.provider === provider);
@@ -164,12 +175,20 @@ export class QuotaMonitor {
     });
   }
 
-  private async fetch(mode: RefreshMode, parentSignal: AbortSignal): Promise<void> {
+  private markError(message: string, target?: RefreshTarget): void {
+    this.state = this.state.map(p => target && p.provider !== target.provider ? p : { ...p, error: message,
+      accounts: p.accounts.map(a => refreshCovers(target, { provider: p.provider, accountId: a.account.id })
+        ? { ...a, error: message } : a) });
+  }
+
+  private async fetch(mode: RefreshMode, parentSignal: AbortSignal, target?: RefreshTarget): Promise<void> {
     const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(50_000)]);
     try {
-      const accounts = await this.client.accounts(signal);
+      const accounts = (await this.client.accounts(signal))
+        .filter(account => refreshCovers(target, { provider: account.provider, accountId: account.id }));
       const previous = new Map(this.state.flatMap(p => p.accounts.map(a => [a.account.id, a] as const)));
-      const results: AccountQuota[] = [];
+      const results: AccountQuota[] = [...previous.values()].filter(entry =>
+        !refreshCovers(target, { provider: entry.account.provider, accountId: entry.account.id }));
       let next = 0;
       // A small bounded pool avoids one simultaneous upstream request per auth file.
       const worker = async () => {
@@ -192,12 +211,12 @@ export class QuotaMonitor {
       };
       await Promise.all(Array.from({ length: Math.min(4, accounts.length) }, worker));
       if (this.controller.signal.aborted) return;
-      this.state = this.summarize(results, this.state, Date.now());
+      this.state = this.summarize(results, this.state, Date.now()).map((provider, index) =>
+        target && provider.provider !== target.provider ? this.state[index]! : provider);
     } catch (error) {
       if (this.controller.signal.aborted) return;
       const message = error instanceof Error ? error.message : 'Unable to refresh accounts.';
-      this.state = this.state.map(p => ({ ...p, error: message,
-        accounts: p.accounts.map(a => ({ ...a, error: message })) }));
+      this.markError(message, target);
     }
   }
 

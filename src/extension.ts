@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { CLIProxyClient, normalizeBaseUrl } from './client';
 import { QuotaMonitor, refreshIntervalFromMinutes } from './monitor';
-import { providerNames, providers, remainingPercent, parseAccountMultipliers, parsePlanCapacities } from './quota';
+import { providerNames, providers, remainingPercent, parseAccountMultipliers, parsePlanCapacities, record } from './quota';
 import { isStale, quotaPreview, quotaView, statusText } from './presentation';
 import { SharedQuotaCache } from './shared-cache';
 
@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext): void {
         view = resolved;
         resolved.webview.options = {
           enableScripts: false,
-          enableCommandUris: ['cliproxyUsage.configure'],
+          enableCommandUris: ['cliproxyUsage.configure', 'cliproxyUsage.refreshTarget'],
           localResourceRoots: [],
         };
         resolved.onDidDispose(() => { if (view === resolved) view = undefined; }, undefined, context.subscriptions);
@@ -132,6 +132,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('cliproxyUsage.refresh', async () => {
       if (!monitor) return configure();
       await monitor.refresh('manual');
+    }),
+    vscode.commands.registerCommand('cliproxyUsage.refreshTarget', async (value: unknown) => {
+      const target = record(value);
+      if (!target || (target.provider !== 'claude' && target.provider !== 'codex')
+        || (target.accountId !== undefined && typeof target.accountId !== 'string')) return;
+      if (!monitor) return configure();
+      await monitor.refresh('manual', { provider: target.provider, accountId: target.accountId });
     }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('cliproxyUsage.accountMultipliers') || event.affectsConfiguration('cliproxyUsage.planCapacities')) {

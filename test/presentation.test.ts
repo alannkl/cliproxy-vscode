@@ -6,6 +6,23 @@ import { quotaPreview, quotaView, resetIn, statusText } from '../src/presentatio
 const now = Date.parse('2026-09-23T08:00:00Z');
 const options = { nonce: 'test-nonce', message: 'Configure a connection.', refreshing: false, checkedAt: now, now };
 
+test('full view exposes provider and individual account refresh actions with safely encoded identities', () => {
+  const accountId = 'codex:second\"<&?#\'account.json';
+  const multiple: ProviderQuota = { ...codex, accounts: [...codex.accounts,
+    { ...codex.accounts[0]!, account: { ...codex.accounts[0]!.account, id: accountId, name: 'second.json' } }],
+  };
+  const page = quotaView([claude, multiple], options);
+  const targets = [...page.matchAll(/href="command:cliproxyUsage.refreshTarget\?([^"]+)"/g)]
+    .map(match => JSON.parse(decodeURIComponent(match[1]!.replaceAll('&#39;', "'"))));
+  assert.deepEqual(targets, [
+    [{ provider: 'claude' }], [{ provider: 'claude', accountId: 'c' }],
+    [{ provider: 'codex' }], [{ provider: 'codex', accountId: 'x' }], [{ provider: 'codex', accountId }],
+  ]);
+  assert.match(page, /aria-label="Refresh all Codex accounts"/);
+  assert.match(page, /aria-label="Refresh second.json"/);
+  assert.doesNotMatch(page, /<script/);
+});
+
 test('Claude status shows five-hour and Fable percentages with the lower remaining-unit color', () => {
   assert.equal(statusText([claude], now), '🟢 C: 98%/94%  ⚪ X: -');
   const lowFable = { ...claude, fableSummary: { ...claude.fableSummary!, used: 90, remainingUnits: 10 } };

@@ -1,4 +1,5 @@
 import { ProviderQuota, DEFAULT_REFRESH_MS } from './monitor';
+import { RefreshTarget } from './client';
 import { Account, AccountQuota, providerNames, providers, quotaColor, remainingColor, remainingPercent, windowLabel } from './quota';
 
 const circles = { green: '🟢', orange: '🟠', red: '🔴', gray: '⚪' } as const;
@@ -106,6 +107,11 @@ interface ViewOptions {
   refreshIntervalMs?: number;
 }
 
+function refreshLink(target: RefreshTarget, label: string): string {
+  const args = encodeURIComponent(JSON.stringify([target]));
+  return `<a class="refresh" href="command:cliproxyUsage.refreshTarget?${html(args)}" title="${html(label)}" aria-label="${html(label)}">Refresh</a>`;
+}
+
 export function quotaView(state: ProviderQuota[], options: ViewOptions): string {
   const now = options.now ?? Date.now();
   const sections = state.map(quota => {
@@ -124,12 +130,14 @@ export function quotaView(state: ProviderQuota[], options: ViewOptions): string 
         </div>`;
       }).join('');
       return `<article class="account">
-        <h3 title="${html(entry.account.name)}">${html(accountName(entry.account))}${entry.account.planType ? `<span class="badge" title="${html(entry.account.planType)}">${html(planName(entry.account)!)}</span>` : ''}${entry.account.disabled ? '<span class="badge">disabled</span>' : ''}</h3>
+        <div class="account-heading"><h3 title="${html(entry.account.name)}">${html(accountName(entry.account))}${entry.account.planType ? `<span class="badge" title="${html(entry.account.planType)}">${html(planName(entry.account)!)}</span>` : ''}${entry.account.disabled ? '<span class="badge">disabled</span>' : ''}</h3>
+        ${refreshLink({ provider: quota.provider, accountId: entry.account.id }, `Refresh ${entry.account.name}`)}</div>
         ${warning ? `<p class="warning">Stale / unavailable: ${html(warning)}</p>` : ''}
         ${windows || '<p class="muted">Quota unavailable</p>'}
       </article>`;
     }).join('');
-    return `<section class="provider"><header><h2>${providerNames[quota.provider]}</h2><span class="summary">${summary}</span></header>
+    return `<section class="provider"><header><h2>${providerNames[quota.provider]}</h2><span class="summary">${summary}</span>
+      ${refreshLink({ provider: quota.provider }, `Refresh all ${providerNames[quota.provider]} accounts`)}</header>
       ${accounts || `<p class="${quota.error ? 'warning' : 'muted'}">${html(quota.error ?? 'No accounts found.')}</p>`}</section>`;
   }).join('');
   const content = state.length ? sections : `<div class="setup"><p>${html(options.message)}</p>
@@ -148,7 +156,11 @@ export function quotaView(state: ProviderQuota[], options: ViewOptions): string 
   .summary, .muted, .reset, footer { color: var(--vscode-descriptionForeground); font-size: 11px; }
   .summary { margin-left: auto; }
   .account + .account { margin-top: 22px; }
-  h3 { font-size: 12px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; margin-bottom: 10px; }
+  .account-heading { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+  h3 { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+  .refresh { flex-shrink: 0; color: var(--vscode-textLink-foreground); font-size: 11px; text-decoration: none; }
+  .refresh:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
+  .refresh:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
   .badge { margin-left: 8px; font-size: 10px; font-weight: normal; color: var(--vscode-descriptionForeground); }
   .window { display: grid; grid-template-columns: minmax(50px, auto) minmax(40px, 1fr) 4ch; align-items: center; gap: 4px 10px; margin: 10px 0; }
   .window-name { font-size: 12px; max-width: 100px; overflow-wrap: anywhere; }
