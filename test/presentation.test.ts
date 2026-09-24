@@ -20,6 +20,9 @@ test('full view exposes provider and individual account refresh actions with saf
   ]);
   assert.match(page, /aria-label="Refresh all Codex accounts"/);
   assert.match(page, /aria-label="Refresh second.json"/);
+  assert.equal((page.match(/class="refresh"/g) ?? []).length, 5);
+  assert.equal((page.match(/<svg /g) ?? []).length, 5);
+  assert.doesNotMatch(page, />Refresh</);
   assert.doesNotMatch(page, /<script/);
 });
 

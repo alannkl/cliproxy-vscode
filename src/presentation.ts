@@ -107,9 +107,11 @@ interface ViewOptions {
   refreshIntervalMs?: number;
 }
 
+const refreshIcon = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M4.681 3H2V2h3.5l.5.5V6H5V4a5 5 0 1 0 4.53-.761l.302-.954A6 6 0 1 1 4.681 3z"/></svg>`;
+
 function refreshLink(target: RefreshTarget, label: string): string {
   const args = encodeURIComponent(JSON.stringify([target]));
-  return `<a class="refresh" href="command:cliproxyUsage.refreshTarget?${html(args)}" title="${html(label)}" aria-label="${html(label)}">Refresh</a>`;
+  return `<a class="refresh" href="command:cliproxyUsage.refreshTarget?${html(args)}" title="${html(label)}" aria-label="${html(label)}">${refreshIcon}</a>`;
 }
 
 export function quotaView(state: ProviderQuota[], options: ViewOptions): string {
@@ -150,16 +152,16 @@ export function quotaView(state: ProviderQuota[], options: ViewOptions): string 
   * { box-sizing: border-box; }
   body { margin: 0; padding: 14px 16px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font: var(--vscode-font-size, 13px) var(--vscode-font-family, sans-serif); }
   .provider + .provider { border-top: 1px solid var(--vscode-widget-border, #8884); margin-top: 24px; padding-top: 18px; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin-bottom: 18px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 18px; }
   h2, h3, p { margin: 0; }
   h2 { font-size: 14px; font-weight: 600; }
   .summary, .muted, .reset, footer { color: var(--vscode-descriptionForeground); font-size: 11px; }
   .summary { margin-left: auto; }
   .account + .account { margin-top: 22px; }
-  .account-heading { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+  .account-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
   h3 { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
-  .refresh { flex-shrink: 0; color: var(--vscode-textLink-foreground); font-size: 11px; text-decoration: none; }
-  .refresh:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
+  .refresh { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--vscode-textLink-foreground); text-decoration: none; }
+  .refresh:hover { color: var(--vscode-textLink-activeForeground); }
   .refresh:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
   .badge { margin-left: 8px; font-size: 10px; font-weight: normal; color: var(--vscode-descriptionForeground); }
   .window { display: grid; grid-template-columns: minmax(50px, auto) minmax(40px, 1fr) 4ch; align-items: center; gap: 4px 10px; margin: 10px 0; }
