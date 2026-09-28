@@ -8,7 +8,18 @@ Move the pointer into the hover preview to scroll through accounts. Its **Open f
 
 ## Install and connect
 
-1. In VS Code, run **Extensions: Install from VSIX…** and choose `cliproxy-usage-0.1.0.vsix`.
+On a new machine, generate the VSIX from this repository, then install it. Requires Node.js 22.
+
+```sh
+git clone https://github.com/alannkl/cliproxy-vscode.git
+cd cliproxy-vscode
+npm ci
+npm run package
+```
+
+`npm run package` writes `cliproxy-usage-0.1.0.vsix` in the repository root. The filename follows `name` and `version` in `package.json`. An existing VSIX can be installed without building.
+
+1. In VS Code or Cursor, run **Extensions: Install from VSIX…** and choose that file.
 2. Open **CLIProxy Quotas** in the Activity Bar and click **Configure Connection**, or run **CLIProxy Usage: Configure Connection** from the command palette.
 3. Enter your VM URL, for example `http://your-vm:8317`, and its **management key**. This is the management API key, not an inference API key.
 
@@ -74,7 +85,7 @@ npm run check
 npm run package
 ```
 
-`npm run package` produces the local VSIX, including the small `proper-lockfile` dependency used for cross-window coordination. Press F5 in this repository to launch an Extension Development Host, then configure its connection.
+`npm run package` produces the installable VSIX described above, including the small `proper-lockfile` dependency used for cross-window coordination. Press F5 in this repository to launch an Extension Development Host, then configure its connection.
 
 Tests use a loopback HTTP server and real child processes. They cover weighted capacity, shared fetches, manual refresh coalescing, cache notifications, cooldown recovery, terminated lock owners, connection isolation, malformed caches, requests, scheduling, and presentation. When connecting a new server, compare its account responses with the extension. These automated tests do not exercise the VS Code UI.
 
