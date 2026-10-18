@@ -242,13 +242,21 @@ export function claudeProfilePlan(payload: unknown): string | undefined {
 
 export function summarizeQuota(accounts: AccountQuota[], now: number, policy: CapacityPolicy = {}, selection: 'overall' | 'fable' = 'overall'): Summary | undefined {
   if (accounts.length === 0) return undefined;
-  const selected = accounts.map(account => {
+  let selected = accounts.map(account => {
     if (account.error) throw new Error('Some accounts could not be refreshed.');
     const shortest = selection === 'fable' ? account.windows.find(w => w.kind === 'fable')
       : account.windows.filter(w => w.overall).sort((a, b) => a.seconds - b.seconds)[0];
     if (!shortest) throw new Error(`An account has no ${selection} quota window.`);
     return shortest;
   });
+  if (selection === 'overall') {
+    const counts = new Map<number, number>();
+    for (const window of selected) counts.set(window.seconds, (counts.get(window.seconds) ?? 0) + 1);
+    // Keep the largest comparable group; ties prefer the shorter quota period.
+    const period = [...counts].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]![0];
+    accounts = accounts.filter((_, index) => selected[index]!.seconds === period);
+    selected = selected.filter(window => window.seconds === period);
+  }
   const seconds = selected[0]!.seconds;
   if (selected.some(w => w.seconds !== seconds)) throw new Error('Accounts report different shortest quota windows.');
   const plans = policy.planCapacities ?? parsePlanCapacities();

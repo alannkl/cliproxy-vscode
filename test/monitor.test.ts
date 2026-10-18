@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { CLIProxyClient } from '../src/client';
 import { QuotaMonitor, refreshIntervalFromMinutes } from '../src/monitor';
 import { record, parsePlanCapacities } from '../src/quota';
+import { quotaPreview, quotaView, statusText } from '../src/presentation';
 import { serve, weekly } from './server';
 
 const files = [
@@ -426,4 +427,37 @@ test('disposing during a request prevents late updates', async t => {
   await pending;
   assert.equal(updates, 1);
   assert.equal(monitor.state[1]?.summary, undefined);
+});
+
+test('mixed weekly and monthly Codex readings keep a healthy combined status and separate monthly account', async t => {
+  const now = 1800000000000;
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const url = await serve(t, request => {
+    if (request.path.endsWith('auth-files')) return { body: { files: [
+      { name: 'zweekly', type: 'codex', auth_index: 'large' },
+      { name: 'yweekly', type: 'codex', auth_index: 'small' },
+      { name: 'amonthly', type: 'codex', auth_index: 'free' },
+    ] } };
+    const id = record(request.body)?.auth_index;
+    const body = weekly(id === 'large' ? 0 : id === 'small' ? 67 : 76);
+    if (id === 'free') body.rate_limit.primary_window.limit_window_seconds = 2592000;
+    return { body: { status_code: 200, body: { ...body, plan_type: id === 'large' ? 'prolite' : id === 'small' ? 'team' : 'free' } } };
+  });
+  const monitor = new QuotaMonitor(new CLIProxyClient(url, 'test-key'), () => {});
+  t.after(() => monitor.dispose());
+  await monitor.refresh();
+  const quota = monitor.state.find(p => p.provider === 'codex')!;
+  assert.equal(quota.error, undefined);
+  assert.equal(quota.accounts.length, 3);
+  assert.equal(quota.summary?.totalUnits, 120);
+  assert.match(statusText(monitor.state, now), /🟢 X: 89%/);
+  const preview = quotaPreview([quota], now, now);
+  const page = quotaView([quota], { nonce: 'test', message: '', refreshing: false, now });
+  for (const display of [preview, page]) {
+    assert.doesNotMatch(display, /Stale \/ unavailable/);
+    assert.match(display, /Separate quota · excluded from the combined total/);
+    assert.match(display, /24%/);
+    assert.match(display, /30d/);
+    assert.ok(display.indexOf('zweekly') < display.indexOf('amonthly'));
+  }
 });

@@ -2,7 +2,7 @@
   "name": "cliproxy-usage",
   "displayName": "CLIProxy Usage",
   "description": "Claude and Codex quota remaining in your status bar, via your CLIProxyAPI server.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "alannkl",
   "license": "MIT",
   "repository": {

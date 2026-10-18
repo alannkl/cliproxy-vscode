@@ -128,10 +128,19 @@ function accountWarning(
     now - entry.updatedAt > refreshIntervalMs * 2
   )
     return "Waiting for a fresh reading.";
-  // Provider-wide failures without account errors, such as mismatched windows, still need an explanation.
+  // Provider-wide capacity failures without account errors still need an explanation.
   if (quota.error && !quota.accounts.some((account) => account.error))
     return quota.error;
   return undefined;
+}
+
+function separateQuota(entry: AccountQuota, quota: ProviderQuota): boolean {
+  return quota.summary !== undefined &&
+    Math.min(...entry.windows.filter(window => window.overall).map(window => window.seconds)) !== quota.summary.seconds;
+}
+
+function displayedAccounts(quota: ProviderQuota): AccountQuota[] {
+  return [...quota.accounts].sort((a, b) => Number(separateQuota(a, quota)) - Number(separateQuota(b, quota)));
 }
 
 function providerPreview(
@@ -152,12 +161,14 @@ function providerPreview(
     );
   if (!quota.accounts.length)
     lines.push(markdown(quota.error ?? "No accounts found."), "");
-  for (const entry of quota.accounts) {
+  for (const entry of displayedAccounts(quota)) {
     const warning = accountWarning(entry, quota, now, refreshIntervalMs);
     lines.push(
       `**${markdown(accountName(entry.account))}**${entry.account.planType ? " · " + markdown(planName(entry.account)!) : ""}${entry.account.disabled ? " · disabled" : ""}`,
       "",
     );
+    if (separateQuota(entry, quota))
+      lines.push("Separate quota · excluded from the combined total.", "");
     if (warning) lines.push(`Stale / unavailable: ${markdown(warning)}`, "");
     lines.push("<table><tbody>");
     for (const window of entry.windows) {
@@ -222,7 +233,7 @@ export function quotaView(
       const summary = quota.summary
         ? `${remainingPercent(quota.summary.used)}% · ${Math.round(quota.summary.remainingUnits)}/${Math.round(quota.summary.totalUnits)} units · ${windowLabel(quota.summary.seconds)}`
         : "-";
-      const accounts = quota.accounts
+      const accounts = displayedAccounts(quota)
         .map((entry) => {
           const warning = accountWarning(
             entry,
@@ -248,6 +259,7 @@ export function quotaView(
           return `<article class="account">
         <div class="account-heading"><h3 title="${html(entry.account.name)}">${html(accountName(entry.account))}${entry.account.planType ? `<span class="badge" title="${html(entry.account.planType)}">${html(planName(entry.account)!)}</span>` : ""}${entry.account.disabled ? '<span class="badge">disabled</span>' : ""}</h3>
         ${refreshLink({ provider: quota.provider, accountId: entry.account.id }, `Refresh ${entry.account.name}`)}</div>
+        ${separateQuota(entry, quota) ? '<p class="muted">Separate quota · excluded from the combined total.</p>' : ""}
         ${warning ? `<p class="warning">Stale / unavailable: ${html(warning)}</p>` : ""}
         ${windows || '<p class="muted">Quota unavailable</p>'}
       </article>`;

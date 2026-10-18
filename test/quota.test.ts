@@ -173,7 +173,7 @@ test('accounts at 20 and 80 percent used average to 50 percent, without includin
   assert.equal(summarizeQuota([], 123), undefined);
 });
 
-test('missing, malformed, and mismatched windows never produce a healthy zero or a mixed-period average', () => {
+test('missing and malformed windows never produce a healthy zero', () => {
   for (const used of [null, undefined, '', 'oops', -1, 101, NaN, true]) {
     assert.throws(() => parseQuota('codex', codex(used)), /percentage/);
   }
@@ -186,7 +186,8 @@ test('missing, malformed, and mismatched windows never produce a healthy zero or
     { account, windows: parseQuota('codex', codex(20)) },
     { account, windows: parseQuota('codex', codex(80, 18000)) },
   ];
-  assert.throws(() => summarizeQuota(rows, 123), /different shortest/);
+  assert.equal(summarizeQuota(rows, 123)!.seconds, 18000);
+  assert.equal(summarizeQuota(rows, 123)!.used, 80);
   assert.throws(() => summarizeQuota([{ account, windows: [] }], 123), /no overall/);
   assert.throws(() => summarizeQuota([{ ...rows[0]!, error: 'Failed' }], 123), /could not be refreshed/);
 });
@@ -218,4 +219,32 @@ test('colors warn at 50 and 20 percent remaining, follow displayed rounding, and
   assert.deepEqual([49.5, 49.51, 79.5, 79.51].map(n => quotaColor(n)), ['green', 'orange', 'orange', 'red']);
   assert.equal(quotaColor(50, true), 'gray');
   assert.equal(quotaColor(undefined), 'gray');
+});
+
+test('mixed periods combine the largest matching group with plan weights for every provider', () => {
+  for (const provider of ['codex', 'claude'] as const) {
+    const rows: AccountQuota[] = [
+      { account: { ...account, provider, name: 'monthly', planType: 'unknown' }, windows: parseQuota('codex', codex(76, 2592000)) },
+      { account: { ...account, provider, name: 'large' }, windows: parseQuota('codex', codex(0)) },
+      { account: { ...account, provider, name: 'small' }, windows: parseQuota('codex', codex(67)) },
+    ];
+    const summary = summarizeQuota(rows, 123, { accountMultipliers: { large: 5, small: 1 } })!;
+    assert.equal(summary.seconds, 604800);
+    assert.equal(summary.totalUnits, 120);
+    assert.equal(summary.remainingUnits, 106.6);
+    assert.equal(Math.round(100 - summary.used), 89);
+    assert.equal(rows.length, 3);
+  }
+});
+test('equally sized period groups prefer the shorter period regardless of account order', () => {
+  const rows = [
+    { account, windows: parseQuota('codex', codex(76, 2592000)) },
+    { account, windows: parseQuota('codex', codex(20)) },
+  ];
+  for (const ordered of [rows, [...rows].reverse()]) {
+    const summary = summarizeQuota(ordered, 123)!;
+    assert.equal(summary.seconds, 604800);
+    assert.equal(summary.used, 20);
+    assert.equal(summary.totalUnits, 100);
+  }
 });

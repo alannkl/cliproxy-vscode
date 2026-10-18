@@ -17,7 +17,7 @@ npm ci
 npm run package
 ```
 
-`npm run package` writes `cliproxy-usage-0.1.0.vsix` in the repository root. The filename follows `name` and `version` in `package.json`. An existing VSIX can be installed without building.
+`npm run package` writes `cliproxy-usage-0.1.1.vsix` in the repository root. The filename follows `name` and `version` in `package.json`. An existing VSIX can be installed without building.
 
 1. In VS Code or Cursor, run **Extensions: Install from VSIX…** and choose that file.
 2. Open **CLIProxy Quotas** in the Activity Bar and click **Configure Connection**, or run **CLIProxy Usage: Configure Connection** from the command palette.
@@ -45,7 +45,7 @@ CLIProxyAPI must allow remote management requests from your computer. A `403` ca
 
 When any account fails, the provider keeps its last complete capacity total with a neutral dot. Successful account rows can still update and keep their colors. Failed rows retain their last reading, use gray bars, and show the error once at account level. Connection errors remain visible when no accounts have loaded. Missing data is never counted as zero. Without a complete previous reading, the provider shows `-`.
 
-Accounts under a provider are expected to share quota windows. If the API reports different shortest windows, the extension marks the total unavailable or stale rather than combining different periods. Removing all accounts clears the provider's percentage.
+Each provider combines the largest group of accounts with matching shortest overall quota windows; ties prefer the shorter period. Accounts with other periods appear separately below that group in the sidebar and preview, labeled as excluded from the combined total. Plan weights apply only within the combined group. Removing all accounts clears the provider's percentage.
 
 For example, this user setting updates the plan list for every matching Codex account:
 
